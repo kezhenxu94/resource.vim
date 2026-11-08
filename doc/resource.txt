@@ -93,8 +93,8 @@ g?        Show the help: the keymaps and the provider's help.
           around. CTRL-W d shows them.
 CTRL-]    Jump to what the cell under the cursor refers to. The jumps are
           pushed on the |tag-stack|: |CTRL-T| jumps back, |CTRL-W_]| opens
-          the jump in a split. 'tagfunc' in Neovim; mapped in Vim, which
-          refuses tags of URLs.
+          the jump in a split. The keys are mapped, Vim refuses tags of
+          URLs.
 CTRL-C    Stop following logs.
 
                                                           *resource-write*

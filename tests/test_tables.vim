@@ -133,4 +133,9 @@ function! Test_header_follows_the_horizontal_scroll() abort
   normal 0zl
   doautocmd WinScrolled
   call assert_match('^AME', resource#buffer#header(win_getid()).text)
+  " Still shown far to the right
+  normal 0020zl
+  doautocmd WinScrolled
+  call assert_match('COMMAND\|OWNER\|AGE\|STATUS', resource#compat#header(win_getid()))
+  call assert_equal(1, getwinvar(win_getid(), 'resource_header'))
 endfunction

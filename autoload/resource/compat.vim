@@ -591,15 +591,11 @@ function! resource#compat#term_enter() abort
 endfunction
 
 " ---------------------------------------------------------------------------
-" Tags: <C-]> jumps to what the cell under the cursor refers to, with
-" 'tagfunc' in Neovim. Vim refuses tags of URLs (E1576): the keys are mapped
-" and the jumps pushed on the tag stack instead, so that <C-t> goes back.
+" Tags: <C-]> jumps to what the cell under the cursor refers to. Vim refuses
+" tags of URLs (E1576): the keys are mapped and the jumps pushed on the tag
+" stack instead, so that <C-t> goes back, in both editors.
 
 function! resource#compat#setup_tags(buf) abort
-  if s:nvim
-    call setbufvar(a:buf, '&tagfunc', 'resource#buffer#tagfunc')
-    return
-  endif
   nnoremap <buffer> <silent> <C-]> <Cmd>call resource#compat#tag_jump(0)<CR>
   nnoremap <buffer> <silent> <C-w>] <Cmd>call resource#compat#tag_jump(1)<CR>
   nnoremap <buffer> <silent> <C-w><C-]> <Cmd>call resource#compat#tag_jump(1)<CR>

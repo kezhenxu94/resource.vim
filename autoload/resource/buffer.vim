@@ -518,13 +518,3 @@ function! resource#buffer#show_diagnostics() abort
     call resource#float(map(copy(diagnostics), 'v:val.message'), {})
   endif
 endfunction
-
-" 'tagfunc' of resource buffers, so that <C-]>, <C-w>] and <C-t> work as
-" usual. Only jumps from the cursor, :tag {name} uses the tags files.
-function! resource#buffer#tagfunc(pattern, flags, info) abort
-  if empty(get(s:buffers, bufnr(''), {})) || a:flags !~# 'c'
-    return v:null
-  endif
-  let target = resource#tag(bufnr(''))
-  return empty(target) ? [] : [{'name': a:pattern, 'filename': target, 'cmd': '1'}]
-endfunction
