@@ -268,7 +268,7 @@ function! resource#compat#rows(buf, ids) abort
     endfor
   else
     for prop in s:props(a:buf, 'row', 1, -1)
-      if has_key(lines, prop.id)
+      if has_key(lines, prop.id) && s:row_line(a:buf, prop.lnum)
         let lines[prop.id] = prop.lnum
       endif
     endfor
@@ -282,7 +282,13 @@ function! resource#compat#rows_in(buf, first, last) abort
     let marks = nvim_buf_get_extmarks(a:buf, s:ns('row'), [a:first - 1, 0], [a:last - 1, -1], {'details': v:true})
     return map(filter(marks, '!get(v:val[3], "invalid", v:false)'), 'v:val[0]')
   endif
-  return map(s:props(a:buf, 'row', a:first, a:last), 'v:val.id')
+  return map(filter(s:props(a:buf, 'row', a:first, a:last), 's:row_line(a:buf, v:val.lnum)'), 'v:val.id')
+endfunction
+
+" Older Vim versions keep the properties of the only line once it is
+" deleted, leaving an empty line: rows are never empty.
+function! s:row_line(buf, lnum) abort
+  return getbufline(a:buf, a:lnum)[0] !=# ''
 endfunction
 
 " Mark the cell of the 0-indexed byte range [{start}, {end}) of {lnum},
