@@ -1,0 +1,392 @@
+*resource.txt*  Edit any resource as a buffer
+
+==============================================================================
+CONTENTS                                                   *resource-contents*
+
+  1. Introduction ....................................... |resource.vim|
+  2. Buffers ............................................ |resource-buffers|
+  3. Configuration ...................................... |resource-config|
+  4. Providers .......................................... |resource-provider|
+  5. API ................................................ |resource-api|
+  6. vim9script ......................................... |resource-vim9|
+  7. Lua ................................................ |resource-lua|
+
+==============================================================================
+1. Introduction                                     *resource.vim* *resource*
+
+resource.vim is the core of plugins that show external resources as buffers,
+like kube.nvim (Kubernetes) and docker.nvim. A plugin registers a provider: a
+scheme, how to parse buffer names, how to load them. resource.vim does the
+rest: tables with a header, rows and cells that follow edits, |:w| applying
+the deleted rows and the edited cells, periodic reloads, logs, terminals,
+diagnostics, tag jumps, operation menus and help. It has no user-facing
+command of its own.
+
+Requirements: Vim >= 9.1 or Neovim >= 0.11. The implementation is the
+legacy Vimscript autoload API |resource-api|, which runs in both, called
+directly from vim9script |resource-vim9|, with a thin Lua module for Neovim
+|resource-lua|.
+
+A provider listing the processes, delete lines and |:w| to kill them: >vim
+    function! s:load(rbuf) abort
+      return resource#job(['ps', 'axo', 'pid=,user=,comm='],
+            \ {'on_exit': {code, out, err -> s:render(a:rbuf, out)}})
+    endfunction
+
+    function! s:render(rbuf, out) abort
+      let rows = []
+      for line in split(a:out, "\n")
+        let [pid, user, command] =
+              \ matchlist(line, '^\s*\(\d\+\)\s\+\(\S\+\)\s\+\(.*\)$')[1:3]
+        call add(rows, {'row': [pid, user, command],
+              \ 'item': {'name': pid, 'command': command}})
+      endfor
+      call resource#render(a:rbuf, {'headers': ['PID', 'USER', 'COMMAND'],
+            \ 'rows': rows})
+    endfunction
+
+    call resource#register({
+          \ 'name': 'ps',
+          \ 'parse': {name -> {}},
+          \ 'load': function('s:load'),
+          \ 'label': {item -> item.name . ' ' . item.command},
+          \ 'delete': {rbuf, item -> {'title': 'Kill ' . item.name,
+          \   'run': {-> resource#job(['kill', item.name], {})}}},
+          \ 'operations': {rbuf, items -> [{'title': 'Kill -9',
+          \   'run': {-> resource#run(rbuf, items,
+          \     {item -> resource#job(['kill', '-9', item.name], {})},
+          \     'Kill -9 ' . resource#describe(rbuf, items))}}]},
+          \ 'keymaps': {'command': {'lhs': 'K', 'desc': 'show the command',
+          \   'run': {rbuf -> resource#float([resource#item(rbuf).command])}}},
+          \ })
+<
+`:e ps://` lists the processes, `dd` then |:w| kills one after confirming,
+`gra` offers Kill -9, `K` shows the command of the process.
+
+==============================================================================
+2. Buffers                                                  *resource-buffers*
+
+The buffers of a provider are named `{scheme}://{path}[?{params}]`. Reading
+one (|:edit|) parses its name and loads it; reading it again reloads it.
+Every jump is an |:edit| in the current window, so |CTRL-O|, |CTRL-^|,
+|CTRL-T|, 'hidden' and |:bdelete| work as with files. An unloaded buffer
+keeps its state (e.g. watching) for when it is loaded again, a deleted one
+starts over. Their jobs are killed when they are unloaded.
+
+Tables show their header at the top of the window: in the 'winbar' in
+Neovim, in the |WinBar| menu in Vim. Rows keep their item while lines are
+edited: deleted rows stay visible until written, and the cursor stays on the
+same item when the table is reloaded.
+
+                                                       *resource-keymaps*
+The keymaps of every buffer, see |resource-config| to change them:
+
+-         Go to the parent buffer.
+R         Reload, the cursor stays on the same item.
+gw        Toggle reloading the table every `g:{name}_refresh_interval`, the
+          header shows ⟳ while watching. Rows a reload changed are
+          highlighted for a moment.
+gra       Operations on the item under the cursor, or in Visual mode on the
+          selected items.
+g?        Show the help: the keymaps and the provider's help.
+]d [d     Next / previous line with diagnostics (unhealthy items), wrapping
+          around. CTRL-W d shows them.
+CTRL-]    Jump to what the cell under the cursor refers to. The jumps are
+          pushed on the |tag-stack|: |CTRL-T| jumps back, |CTRL-W_]| opens
+          the jump in a split. 'tagfunc' in Neovim; mapped in Vim, which
+          refuses tags of URLs.
+CTRL-C    Stop following logs.
+
+                                                          *resource-write*
+|:w| in a table applies the changes: the items of the deleted rows are
+deleted, the edited cells of editable columns are applied, after confirming
+with the list of the changes; |:w!| does not confirm. Edits of other cells
+are refused, nothing is applied. Once applied, failed or not, the table is
+reloaded. Providers may write other buffers their own way.
+
+Logs (|resource#logs()|) and text views can be edited, e.g. `:%!jq`, they are
+not written: |:w| {file} saves them.
+
+==============================================================================
+3. Configuration                                              *resource-config*
+
+The variables of a plugin are named after its provider's name, e.g.
+`g:kube_refresh_interval` for kube. They are read when used.
+
+g:{name}_keymaps                                          *g:resource_keymaps*
+    The lhs of the keymaps by name, merged with the defaults, '' to disable
+    one. The names of |resource-keymaps|: `parent`, `refresh`, `watch`,
+    `operations`, `help`; and those of the provider. >vim
+        let g:kube_keymaps = {'parent': '<BS>', 'watch': ''}
+<
+g:{name}_refresh_interval                        *g:resource_refresh_interval*
+    How often watched tables (`gw`) reload, in milliseconds, 0 to disable
+    watching. Default: 10000.
+
+g:{name}_logs_max_lines                            *g:resource_logs_max_lines*
+    The lines kept while following logs, the oldest are dropped, -1 for all.
+    Default: 10000.
+
+g:{name}_highlights                                    *g:resource_highlights*
+    Highlight overrides, the arguments of |:highlight| by group, applied again
+    after a |:colorscheme|: >vim
+        let g:kube_highlights = {'KubeHeader': 'guifg=#df8e1d gui=bold'}
+<
+                                                       *resource-highlights*
+The groups of a provider are prefixed by its capitalized name, e.g.
+KubeHeader. They are linked by default, so that colorschemes and
+|:highlight| take precedence:
+    {Name}Header      the header of tables (Title), Neovim only: Vim shows
+                      the |WinBar| with |hl-ToolbarLine|
+    {Name}Body        rows (Normal)
+    {Name}Deleted     deleted rows, until written (DiffDelete)
+    {Name}Changed     rows a watched reload changed (DiffChange)
+    {Name}Editable    cells of editable columns (Identifier)
+    {Name}SignError   the signs of diagnostics, by severity
+    {Name}SignWarn    (DiagnosticSign*, or ErrorMsg, WarningMsg and Comment
+    {Name}SignInfo    without them)
+
+==============================================================================
+4. Providers                                                *resource-provider*
+
+resource#register({provider})                           *resource#register()*
+    Register a provider, a dict. Its functions are funcrefs, lambdas or Lua
+    functions. Required:
+
+    name        The name of the plugin, e.g. `kube`: its variables are
+                `g:{name}_*`, its highlight groups `{Name}*`.
+    parse       Fn(name): the fields of the buffer {name}, a dict, merged
+                into its state {rbuf} (see |resource-rbuf|). Throws an error
+                message when the name is invalid. |resource#parse()| splits
+                names.
+    load        Fn(rbuf): start loading the buffer: render a table
+                (|resource#render()|), set lines (|resource#set_lines()|),
+                show logs (|resource#logs()|), or the error
+                (|resource#error()|). Returns the job(s) loading it
+                (|resource#job()|), a list, or nothing.
+
+    Optional:
+
+    scheme      The scheme of the buffer names, `{name}` by default.
+    title       The title of the help, `{name}` by default.
+    canonical   Fn(name): the name of the buffer to edit instead of {name},
+                which is then wiped, e.g. to expand aliases. {name} itself
+                if none. Throws an error message when the name is invalid.
+    term        Fn(fields): for buffers that are terminals (e.g. shells), the
+                command (a list) to run in it, [] when it is invalid (after
+                notifying), v:null for other buffers.
+    identity    Fn(item): what identifies an item across reloads, to keep
+                the cursor on it and highlight the rows that changed. The
+                item's `name` by default.
+    label       Fn(item): how messages name an item, its `name` by default.
+    scope       Fn(rbuf): what confirmations name after their question, e.g.
+                `context: prod` for "Delete pod web (context: prod)?".
+    parent      Fn(rbuf): the name of the parent buffer (`-`), '' if none.
+    tag         Fn(rbuf, cell): the name of the buffer the {cell} refers to
+                (CTRL-]), '' if none. See |resource#cell()|.
+    delete      Fn(rbuf, item): the change deleting the item of a deleted
+                row: {title, run}, run() returns its job (see
+                |resource#run()|); v:null when it cannot be deleted.
+    write       Fn(rbuf, force): write the buffer, |:w!| when {force}.
+                Returns 1 when it did, 0 to write it as a table
+                (|resource-write|). Once saved, it reloads the buffer
+                (|resource#load()|), else the buffer stays modified.
+    operations  Fn(rbuf, items): the operations on {items} (`gra`):
+                [{title, run}], run() takes no argument.
+    keymaps     {name: {lhs, desc, run}}: the provider's keymaps, run(rbuf)
+                runs it in Normal mode. They can also change the lhs or the
+                desc of |resource-keymaps|, e.g. `{'refresh': {'desc': ...}}`.
+    help        The lines of the help after the keymaps.
+    highlights  {group: link}: the default links of the provider's groups,
+                or of {Name}* groups, a link may be a list of groups, the
+                first that exists is linked to.
+    defaults    {key: value}: the defaults of `g:{name}_{key}`, see
+                |resource#config()|.
+    volatile    The columns that change on every reload, e.g. AGE, not
+                highlighted as changes.
+
+                                                            *resource-rbuf*
+{rbuf}, the state of a buffer, is the dict of `parse()` with:
+    bufnr       the buffer number
+    scheme      the scheme of its provider
+    silent      whether the current load is a background reload (watching)
+    watch       whether it is watched
+    jobs        the jobs loading it, by id
+The other keys are internal. Functions taking {rbuf} also accept a buffer
+number, or a copy of the state (from Lua, which gets copies).
+
+==============================================================================
+5. API                                                          *resource-api*
+
+Names ~
+                                                        *resource#parse()*
+resource#parse({name})
+    Split {name}: {scheme, segments (the path split by /, not decoded),
+    params}. `key` and `key=true` params are v:true, `key=false` v:false.
+                                                         *resource#name()*
+resource#name({scheme}, {segments} [, {params}])
+    The name `{scheme}://{segments joined by /}[?{params}]`, the params
+    sorted.
+resource#uri_encode({text})                         *resource#uri_encode()*
+resource#uri_decode({text})                         *resource#uri_decode()*
+    Percent-encode (decode) the bytes of {text}, e.g. of a segment with /.
+resource#to_string({value})                          *resource#to_string()*
+    A param value as in names: true, false or the text.
+resource#open({name})                                    *resource#open()*
+    Edit the buffer {name}, typing in it if it is a terminal (Neovim).
+
+Buffers ~
+resource#get({buf})                                       *resource#get()*
+    The state of the buffer {buf}, {} if it is not a resource buffer.
+resource#buffers()                                     *resource#buffers()*
+    The states of all buffers.
+resource#load({rbuf} [, {opts}])                         *resource#load()*
+    Reload the buffer, {opts}.silent for a background reload: no loading
+    status, no error notification.
+resource#track({rbuf}, {job})                           *resource#track()*
+    Count {job} as loading the buffer too, e.g. the second call of a chain:
+    it is killed with the buffer. Returns {job}.
+resource#loading({rbuf})                              *resource#loading()*
+    Whether a job loading the buffer is running.
+                                                         *resource#render()*
+resource#render({rbuf}, {table})
+    Render {table} in the buffer, modifiable:
+    headers   the column names
+    rows      [{row, item, highlights, diagnostics}]: row the cells
+              (strings), item the dict of the row (none for rows that are
+              not items), highlights {column: group}, diagnostics
+              [{message, severity}], severity 'error', 'warn' or 'info'
+    empty     the status without rows, "Nothing found" by default
+    editable  {column: Fn(rbuf, item, old, new)} returning [change, ''],
+              the change is {title, run} as for `delete()`, or
+              [v:null, error] when {new} is invalid
+resource#set_lines({rbuf}, {lines} [, {opts}])       *resource#set_lines()*
+    Replace the lines of the buffer, leaving it unmodified. {opts}:
+    modifiable (0 by default), writable (whether |:w| writes it, 1 by
+    default).
+resource#logs({rbuf}, {cmd}, {follow})                    *resource#logs()*
+    Show the output of {cmd} (a list), stdout and stderr; while it runs if
+    {follow}, keeping the cursor at the end like `tail -f`, CTRL-C stops.
+    Returns the job.
+resource#status({rbuf}, {text} [, {hl}])                *resource#status()*
+    Show {text} after the first line, '' to clear it.
+resource#error({rbuf}, {err})                            *resource#error()*
+    Show the error of loading the buffer: in its status, notified unless it
+    is a background reload.
+resource#item({rbuf} [, {lnum}])                          *resource#item()*
+    The item of the row at {lnum}, the cursor line by default, v:null if
+    none.
+resource#items({rbuf}, {first}, {last})                  *resource#items()*
+    The items of the rows in the lines {first} to {last}.
+resource#deleted({rbuf})                               *resource#deleted()*
+    The items of the deleted rows, e.g. for `write()`.
+resource#cell({rbuf} [, {lnum}, {col}])                   *resource#cell()*
+    The cell under the cursor, or at {lnum} and the 0-indexed byte {col}:
+    {item, column, text}; column and text are '' between cells, {} if none.
+resource#tag({rbuf})                                       *resource#tag()*
+    The name of the buffer the cell under the cursor refers to, see `tag()`.
+resource#run({rbuf}, {items}, {Call} [, {prompt}])          *resource#run()*
+    Run {Call}(item) for every item, it returns the job of the item: their
+    output is notified, stdout when they succeed, stderr when they fail,
+    then the buffer is reloaded once all are done. With {prompt}, once
+    confirmed: "{prompt} ({scope})?".
+resource#describe({rbuf}, {items})                    *resource#describe()*
+    How messages name {items}: their labels, the first 3 and how many more.
+resource#config({rbuf}, {key})                          *resource#config()*
+    The value of `g:{name}_{key}`, else the provider's default, else
+    resource.vim's. {rbuf} may also be the name of the provider.
+
+Jobs ~
+resource#job({cmd}, {opts})                                *resource#job()*
+    Run {cmd} (a list) asynchronously. {opts}:
+    on_exit     Fn(code, stdout, stderr) once done, not when killed
+    on_stdout   Fn(chunk), on_stderr Fn(chunk), the output as it arrives
+    timeout     milliseconds after which it is killed, on_exit gets 124
+    Returns the job, {} when it could not be started.
+resource#running({job})                                *resource#running()*
+    Whether {job}, or any job of a list, is running.
+resource#kill({job})                                      *resource#kill()*
+    Kill {job}, or the jobs of a list.
+resource#system({cmd}, {timeout})                       *resource#system()*
+    Run {cmd} synchronously, e.g. for completion, killed after {timeout}
+    milliseconds: [code, stdout], code -1 when it failed to run.
+
+Messages and windows ~
+resource#notify({msg} [, {level}])                      *resource#notify()*
+    Show {msg}, {level} 'info' (the default), 'warn' or 'error'.
+resource#select({items}, {opts}, {Callback})            *resource#select()*
+    Select one of {items}, {opts}: prompt, format_item (Fn(item)).
+    {Callback}(item, index), the index 1-based, both v:null when cancelled.
+resource#input({opts}, {Callback})                       *resource#input()*
+    Ask for a value, {opts}: prompt, default. {Callback}(value), v:null
+    when cancelled or empty.
+resource#confirm({prompt}, {Callback})                 *resource#confirm()*
+    Ask Yes or No, {Callback}(confirmed).
+    Prompts are deferred: Vim does not read the answer of a prompt in a job
+    callback.
+resource#float({lines} [, {opts}])                       *resource#float()*
+    Show {lines} in a floating window (a popup in Vim). {opts}: title;
+    enter, to focus it, then q, <Esc> and the keys of {opts}.close_keys
+    close it; else it closes when the cursor moves.
+resource#state_dir()                                 *resource#state_dir()*
+    Where plugins keep their state, e.g. `~/.local/state/nvim`.
+
+==============================================================================
+6. vim9script                                                  *resource-vim9*
+
+vim9script calls the autoload functions directly, there is no separate
+module: >vim
+    vim9script
+
+    def Load(rbuf: dict<any>): dict<any>
+      return resource#job(['ps', 'axo', 'pid=,comm='], {
+        on_exit: (code: number, stdout: string, stderr: string) => {
+          var rows = split(stdout, "\n")->mapnew((_, line) => {
+            var [pid, command] = matchlist(line, '^\s*\(\d\+\)\s\+\(.*\)$')[1 : 2]
+            return {row: [pid, command], item: {name: pid}}
+          })
+          resource#render(rbuf, {headers: ['PID', 'COMMAND'], rows: rows})
+        }})
+    enddef
+
+    resource#register({
+      name: 'ps',
+      parse: (name) => ({}),
+      load: Load,
+      delete: (rbuf, item) => ({title: 'Kill ' .. item.name,
+        run: () => resource#job(['kill', item.name], {})}),
+    })
+<
+==============================================================================
+7. Lua                                                          *resource-lua*
+
+In Neovim, `require("resource")` calls the autoload functions:
+`resource.{name}(...)` is `resource#{name}(...)`, with Lua functions as the
+callbacks. Lua functions get copies of {rbuf} and of jobs, the API resolves
+them by their buffer number and id. Vimscript funcrefs cannot be called
+from Lua: the API takes callbacks, and changes and operations return their
+job, rather than calling one. >lua
+    local resource = require("resource")
+
+    resource.register({
+      name = "ps",
+      parse = function() return {} end,
+      load = function(rbuf)
+        return resource.job({ "ps", "axo", "pid=,comm=" }, {
+          on_exit = function(_, stdout)
+            local rows = {}
+            for pid, command in stdout:gmatch("%s*(%d+)%s+([^\n]*)") do
+              table.insert(rows, { row = { pid, command }, item = { name = pid } })
+            end
+            resource.render(rbuf, { headers = { "PID", "COMMAND" }, rows = rows })
+          end,
+        })
+      end,
+      delete = function(_, item)
+        return { title = "Kill " .. item.name, run = function()
+          return resource.job({ "kill", item.name }, {})
+        end }
+      end,
+    })
+<
+ vim:tw=78:ts=8:ft=help:norl:

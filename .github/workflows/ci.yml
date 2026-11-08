@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.editor }} ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported versions, the latest releases and nightly
+          - { editor: vim, neovim: false, version: v9.1.0000 }
+          - { editor: vim, neovim: false, version: stable }
+          - { editor: vim, neovim: false, version: nightly }
+          - { editor: nvim, neovim: true, version: v0.11.0 }
+          - { editor: nvim, neovim: true, version: stable }
+          - { editor: nvim, neovim: true, version: nightly }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: rhysd/action-setup-vim@v1
+        id: vim
+        with:
+          neovim: ${{ matrix.neovim }}
+          version: ${{ matrix.version }}
+      - run: make test EDITORS=${{ steps.vim.outputs.executable }}
