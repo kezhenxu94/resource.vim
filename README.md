@@ -60,6 +60,47 @@ call resource#register({
       \ })
 ```
 
+The same provider in Lua, for Neovim (e.g. in `plugin/ps.lua`):
+
+```lua
+local resource = require("resource")
+
+resource.register({
+  name = "ps",
+  parse = function() return {} end,
+  load = function(rbuf)
+    return resource.job({ "ps", "axo", "pid=,user=,comm=" }, {
+      on_exit = function(_, stdout)
+        local rows = {}
+        for pid, user, command in stdout:gmatch("%s*(%d+)%s+(%S+)%s+([^\n]*)") do
+          table.insert(rows, { row = { pid, user, command }, item = { name = pid, command = command } })
+        end
+        resource.render(rbuf, { headers = { "PID", "USER", "COMMAND" }, rows = rows })
+      end,
+    })
+  end,
+  label = function(item) return item.name .. " " .. item.command end,
+  delete = function(_, item)
+    return {
+      title = "Kill " .. item.name,
+      run = function() return resource.job({ "kill", item.name }, {}) end,
+    }
+  end,
+  operations = function(rbuf, items)
+    return {
+      {
+        title = "Kill -9",
+        run = function()
+          return resource.run(rbuf, items, function(item)
+            return resource.job({ "kill", "-9", item.name }, {})
+          end, "Kill -9 " .. resource.describe(rbuf, items))
+        end,
+      },
+    }
+  end,
+})
+```
+
 Then `:e ps://`. The API is legacy Vimscript autoload functions (`resource#…`), which vim9script calls directly, and `require("resource")` wraps them for Lua in Neovim. See `:help resource-provider`, `:help resource-api`, `:help resource-vim9` and `:help resource-lua`.
 
 ## Contributing
